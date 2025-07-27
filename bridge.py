@@ -53,20 +53,31 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     w3 = connect_to(chain)
     contracts = get_contract_info(chain, contract_info)
 
-    # Retrieve contract ABI and address from the contract_info.json
-    if chain == 'source':
-        source_contract_address = contracts['source_contract_address']
-        source_contract_abi = contracts['source_contract_abi']
-        destination_contract_address = contracts['destination_contract_address']
-        destination_contract_abi = contracts['destination_contract_abi']
-    else:
-        source_contract_address = contracts['source_contract_address']
-        source_contract_abi = contracts['source_contract_abi']
-        destination_contract_address = contracts['destination_contract_address']
-        destination_contract_abi = contracts['destination_contract_abi']
+    # Debug: print the contract details to ensure correctness
+    print(f"Contracts info: {contracts}")
+    if not contracts:
+        print(f"Failed to load contract info for chain: {chain}")
+        return 0
 
-    # Debug: Print the source contract address to ensure it's correct
-    print(f"Source contract address: {source_contract_address}")  # Debugging line to check the address
+    # Retrieve contract ABI and address from the contract_info.json
+    try:
+        if chain == 'source':
+            source_contract_address = contracts['source_contract_address']
+            source_contract_abi = contracts['source_contract_abi']
+            destination_contract_address = contracts['destination_contract_address']
+            destination_contract_abi = contracts['destination_contract_abi']
+        else:
+            source_contract_address = contracts['source_contract_address']
+            source_contract_abi = contracts['source_contract_abi']
+            destination_contract_address = contracts['destination_contract_address']
+            destination_contract_abi = contracts['destination_contract_abi']
+
+        # Debug: Print contract addresses
+        print(f"Source contract address: {source_contract_address}")
+        print(f"Destination contract address: {destination_contract_address}")
+    except KeyError as e:
+        print(f"KeyError: Missing {e} in contract info")
+        return 0
 
     # Instantiate the contracts
     source_contract = w3.eth.contract(address=source_contract_address, abi=source_contract_abi)
