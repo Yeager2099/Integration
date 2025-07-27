@@ -66,7 +66,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         destination_contract_abi = contracts['destination_contract_abi']
 
     # Debug: Print the source contract address to ensure it's correct
-    print(f"Source contract address: {source_contract_address}")
+    print(f"Source contract address: {source_contract_address}")  # Debugging line to check the address
 
     # Instantiate the contracts
     source_contract = w3.eth.contract(address=source_contract_address, abi=source_contract_abi)
