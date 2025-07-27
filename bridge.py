@@ -36,7 +36,7 @@ def get_contract_info(contract_info="contract_info.json"):
         return None
 
 
-def scan_blocks(chain, contract_info="contract_info.json"):  # Maintain original parameters
+def scan_blocks(chain, contract_info="contract_info.json"):
     if chain not in ['source', 'destination']:
         print(f"Invalid chain: {chain}")
         return 0
