@@ -4,6 +4,7 @@ from web3.middleware import ExtraDataToPOAMiddleware  # Necessary for POA chains
 from datetime import datetime
 import json
 import pandas as pd
+import os
 
 
 def connect_to(chain):
@@ -17,6 +18,12 @@ def connect_to(chain):
         w3 = Web3(Web3.HTTPProvider(api_url))
         # inject the poa compatibility middleware to the innermost layer
         w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        
+        # Load private key and set default account
+        private_key = os.getenv("PRIVATE_KEY")
+        if private_key:
+            warden_account = w3.eth.account.from_key(private_key)
+            w3.eth.default_account = warden_account.address
     return w3
 
 
@@ -28,7 +35,7 @@ def get_contract_info(chain, contract_info):
     try:
         with open(contract_info, 'r') as f:
             contracts = json.load(f)
-            print(f"Loaded contracts: {contracts}")  # 添加调试日志
+            print(f"Loaded contracts: {contracts}")  # Debug output
     except Exception as e:
         print(f"Failed to read contract info\nPlease contact your instructor\n{e}")
         return 0
@@ -51,37 +58,38 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
     # Connect to the respective chain
     w3 = connect_to(chain)
-    contracts = get_contract_info(chain, contract_info)
+    if not w3.isConnected():
+        print(f"Failed to connect to {chain} chain")
+        return 0
 
-    # Debug: print the contract details to ensure correctness
-    print(f"Contracts info: {contracts}")
+    contracts = get_contract_info(chain, contract_info)
     if not contracts:
         print(f"Failed to load contract info for chain: {chain}")
         return 0
 
-    # Retrieve contract ABI and address from the contract_info.json
-    try:
-        if chain == 'source':
-            source_contract_address = contracts['source_contract_address']
-            source_contract_abi = contracts['source_contract_abi']
-            destination_contract_address = contracts['destination_contract_address']
-            destination_contract_abi = contracts['destination_contract_abi']
-        else:
-            source_contract_address = contracts['source_contract_address']
-            source_contract_abi = contracts['source_contract_abi']
-            destination_contract_address = contracts['destination_contract_address']
-            destination_contract_abi = contracts['destination_contract_abi']
+    # Load both source and destination contracts for cross-chain operations
+    all_contracts = get_contract_info('all', contract_info)  # Load all contracts
+    if not all_contracts:
+        with open(contract_info, 'r') as f:
+            all_contracts = json.load(f)
 
-        # Debug: Print contract addresses
-        print(f"Source contract address: {source_contract_address}")
-        print(f"Destination contract address: {destination_contract_address}")
+    try:
+        # Get contract addresses and ABIs
+        source_contract_address = all_contracts['source']['address']
+        source_contract_abi = all_contracts['source']['abi']
+        destination_contract_address = all_contracts['destination']['address']
+        destination_contract_abi = all_contracts['destination']['abi']
+
+        # Instantiate contracts
+        source_contract = w3.eth.contract(address=source_contract_address, abi=source_contract_abi)
+        destination_contract = w3.eth.contract(address=destination_contract_address, abi=destination_contract_abi)
+
     except KeyError as e:
         print(f"KeyError: Missing {e} in contract info")
         return 0
-
-    # Instantiate the contracts
-    source_contract = w3.eth.contract(address=source_contract_address, abi=source_contract_abi)
-    destination_contract = w3.eth.contract(address=destination_contract_address, abi=destination_contract_abi)
+    except Exception as e:
+        print(f"Error initializing contracts: {e}")
+        return 0
 
     # Fetch the last 5 blocks for event scanning
     latest_block = w3.eth.blockNumber
@@ -89,34 +97,68 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
     for block_number in blocks_to_scan:
         # Get block details
-        block = w3.eth.getBlock(block_number, full_transactions=True)
+        try:
+            block = w3.eth.getBlock(block_number, full_transactions=True)
+        except Exception as e:
+            print(f"Error getting block {block_number}: {e}")
+            continue
 
         # Check for Deposit events on the source chain
         if chain == 'source':
             for tx in block.transactions:
-                if tx.to == source_contract_address:
-                    receipt = w3.eth.getTransactionReceipt(tx.hash)
-                    # Look for the Deposit event
-                    for log in receipt.logs:
-                        event = source_contract.events.Deposit().processLog(log)
-                        if event:
-                            print(f"Deposit event detected on source chain at block {block_number}")
-                            # Call the 'wrap()' function on the destination contract
-                            wrap_function = destination_contract.functions.wrap(event['args'].amount)
-                            tx_hash = wrap_function.transact({'from': w3.eth.defaultAccount})
-                            print(f"Transaction hash for wrap: {tx_hash}")
+                if tx.to and tx.to.lower() == source_contract_address.lower():
+                    try:
+                        receipt = w3.eth.getTransactionReceipt(tx.hash)
+                        # Look for the Deposit event
+                        for log in receipt.logs:
+                            try:
+                                event = source_contract.events.Deposit().processLog(log)
+                                if event:
+                                    print(f"Deposit event detected on source chain at block {block_number}")
+                                    print(f"Event details: {event['args']}")
+                                    
+                                    # Call the 'wrap()' function on the destination contract
+                                    wrap_function = destination_contract.functions.wrap(
+                                        event['args']['token'],
+                                        event['args']['recipient'],
+                                        event['args']['amount']
+                                    )
+                                    tx_hash = wrap_function.transact({'from': w3.eth.default_account})
+                                    print(f"Wrap transaction hash: {tx_hash.hex()}")
+                            except Exception as e:
+                                print(f"Error processing Deposit event: {e}")
+                                continue
+                    except Exception as e:
+                        print(f"Error processing transaction {tx.hash.hex()}: {e}")
+                        continue
 
         # Check for Unwrap events on the destination chain
-        if chain == 'destination':
+        elif chain == 'destination':
             for tx in block.transactions:
-                if tx.to == destination_contract_address:
-                    receipt = w3.eth.getTransactionReceipt(tx.hash)
-                    # Look for the Unwrap event
-                    for log in receipt.logs:
-                        event = destination_contract.events.Unwrap().processLog(log)
-                        if event:
-                            print(f"Unwrap event detected on destination chain at block {block_number}")
-                            # Call the 'withdraw()' function on the source contract
-                            withdraw_function = source_contract.functions.withdraw(event['args'].amount)
-                            tx_hash = withdraw_function.transact({'from': w3.eth.defaultAccount})
-                            print(f"Transaction hash for withdraw: {tx_hash}")
+                if tx.to and tx.to.lower() == destination_contract_address.lower():
+                    try:
+                        receipt = w3.eth.getTransactionReceipt(tx.hash)
+                        # Look for the Unwrap event
+                        for log in receipt.logs:
+                            try:
+                                event = destination_contract.events.Unwrap().processLog(log)
+                                if event:
+                                    print(f"Unwrap event detected on destination chain at block {block_number}")
+                                    print(f"Event details: {event['args']}")
+                                    
+                                    # Call the 'withdraw()' function on the source contract
+                                    withdraw_function = source_contract.functions.withdraw(
+                                        event['args']['underlying_token'],
+                                        event['args']['to'],
+                                        event['args']['amount']
+                                    )
+                                    tx_hash = withdraw_function.transact({'from': w3.eth.default_account})
+                                    print(f"Withdraw transaction hash: {tx_hash.hex()}")
+                            except Exception as e:
+                                print(f"Error processing Unwrap event: {e}")
+                                continue
+                    except Exception as e:
+                        print(f"Error processing transaction {tx.hash.hex()}: {e}")
+                        continue
+
+    return 1
