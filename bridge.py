@@ -78,11 +78,12 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             deposit_logs = w3.eth.get_logs({
                 'fromBlock': 'latest',
                 'address': contracts['source']['address'],
-                'topics': [source_contract.events.Deposit().abi['signature']]
+                'topics': [source_contract.events.Deposit().abi['signature']]  # 获取事件签名
             })
 
             for log in deposit_logs:
                 try:
+                    # 使用 .process_log() 方法来解析日志
                     event = source_contract.events.Deposit().process_log(log)
                     print(f"Deposit event found: {event['args']}")
                     
@@ -111,11 +112,12 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             unwrap_logs = w3.eth.get_logs({
                 'fromBlock': 'latest',
                 'address': contracts['destination']['address'],
-                'topics': [destination_contract.events.Unwrap().abi['signature']]
+                'topics': [destination_contract.events.Unwrap().abi['signature']]  # 获取事件签名
             })
 
             for log in unwrap_logs:
                 try:
+                    # 使用 .process_log() 方法来解析日志
                     event = destination_contract.events.Unwrap().process_log(log)
                     print(f"Unwrap event found: {event['args']}")
                     
