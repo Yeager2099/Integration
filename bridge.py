@@ -72,17 +72,18 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             abi=contracts['destination']['abi']
         )
 
-        # 使用 w3.eth.filter 创建事件过滤器
-        deposit_filter = w3.eth.filter({'fromBlock': 'latest', 'address': contracts['source']['address'], 'topics': [source_contract.events.Deposit().signature]})
-        unwrap_filter = w3.eth.filter({'fromBlock': 'latest', 'address': contracts['destination']['address'], 'topics': [destination_contract.events.Unwrap().signature]})
-
-        # Scan events using the filter
+        # 使用 w3.eth.getLogs 来扫描事件
         while True:
-            # 获取 Deposit 事件
-            deposit_logs = deposit_filter.get_new_entries()
+            # 获取 Deposit 事件日志
+            deposit_logs = w3.eth.get_logs({
+                'fromBlock': 'latest',
+                'address': contracts['source']['address'],
+                'topics': [source_contract.events.Deposit().abi['signature']]
+            })
+
             for log in deposit_logs:
                 try:
-                    event = source_contract.events.Deposit().processLog(log)
+                    event = source_contract.events.Deposit().process_log(log)
                     print(f"Deposit event found: {event['args']}")
                     
                     # 调用 destination chain 上的 wrap 函数
@@ -106,11 +107,16 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                     print(f"Error processing Deposit: {str(e)}")
                     continue
 
-            # 获取 Unwrap 事件
-            unwrap_logs = unwrap_filter.get_new_entries()
+            # 获取 Unwrap 事件日志
+            unwrap_logs = w3.eth.get_logs({
+                'fromBlock': 'latest',
+                'address': contracts['destination']['address'],
+                'topics': [destination_contract.events.Unwrap().abi['signature']]
+            })
+
             for log in unwrap_logs:
                 try:
-                    event = destination_contract.events.Unwrap().processLog(log)
+                    event = destination_contract.events.Unwrap().process_log(log)
                     print(f"Unwrap event found: {event['args']}")
                     
                     # 调用 source chain 上的 withdraw 函数
@@ -133,6 +139,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                 except Exception as e:
                     print(f"Error processing Unwrap: {str(e)}")
                     continue
+
             # You can add a sleep to avoid overwhelming the node with requests
             time.sleep(5)
 
