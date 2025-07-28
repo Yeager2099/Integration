@@ -3,7 +3,10 @@ from web3.providers.rpc import HTTPProvider
 from web3.middleware import ExtraDataToPOAMiddleware
 import json
 import os
+from dotenv import load_dotenv  # 导入dotenv模块
 
+# 加载 .env 文件
+load_dotenv()
 
 def connect_to(chain):
     if chain == 'source':  # AVAX C-chain testnet
@@ -20,6 +23,7 @@ def connect_to(chain):
         print(f"Failed to connect to {chain} chain")
         return None
     
+    # 从环境变量中获取私钥
     private_key = os.getenv("PRIVATE_KEY")
     if private_key:
         account = w3.eth.account.from_key(private_key)
