@@ -62,91 +62,77 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         return 0
 
     try:
-        # Load contracts
-        source_contract = w3.eth.contract(
-            address=contracts['source']['address'],
-            abi=contracts['source']['abi']
-        )
-        destination_contract = w3.eth.contract(
-            address=contracts['destination']['address'],
-            abi=contracts['destination']['abi']
-        )
+        # 区分源合约和目标合约逻辑
+        if chain == 'source':
+            contract = w3.eth.contract(
+                address=contracts['source']['address'],
+                abi=contracts['source']['abi']
+            )
+            # 监听 Deposit 事件，触发目标链的 wrap
+            event = contract.events.Deposit
+            target_chain = 'destination'
+            target_func = 'wrap'
+        else:
+            contract = w3.eth.contract(
+                address=contracts['destination']['address'],
+                abi=contracts['destination']['abi']
+            )
+            # 监听 Unwrap 事件，触发源链的 withdraw
+            event = contract.events.Unwrap
+            target_chain = 'source'
+            target_func = 'withdraw'
 
-        # 使用 w3.eth.getLogs 来扫描事件
+        # 创建事件过滤器，从最新区块开始监听
+        filter = event.create_filter(fromBlock='latest')
+
         while True:
-            # 获取 Deposit 事件日志
-            deposit_logs = w3.eth.get_logs({
-                'fromBlock': 'latest',
-                'address': contracts['source']['address'],
-                'topics': [source_contract.events.Deposit().abi['signature']]  # 获取事件签名
-            })
+            # 获取新产生的事件
+            for log in filter.get_new_entries():
+                # 解析事件参数
+                event_args = event().process_log(log)['args']
+                print(f"Caught {event.__name__} event: {event_args}")
 
-            for log in deposit_logs:
-                try:
-                    # 使用 .process_log() 方法来解析日志
-                    event = source_contract.events.Deposit().process_log(log)
-                    print(f"Deposit event found: {event['args']}")
-                    
-                    # 调用 destination chain 上的 wrap 函数
-                    dest_w3 = connect_to('destination')
-                    if dest_w3:
-                        dest_contract = dest_w3.eth.contract(
-                            address=contracts['destination']['address'],
-                            abi=contracts['destination']['abi']
-                        )
-                        tx_hash = dest_contract.functions.wrap(
-                            event['args']['token'],
-                            event['args']['recipient'],
-                            event['args']['amount']
-                        ).transact({
-                            'from': dest_w3.eth.default_account,
-                            'gas': 300000,
-                            'gasPrice': Web3.to_wei('10', 'gwei')
-                        })
-                        print(f"Wrap tx sent: {tx_hash.hex()}")
-                except Exception as e:
-                    print(f"Error processing Deposit: {str(e)}")
+                # 连接目标链
+                target_w3 = connect_to(target_chain)
+                if not target_w3:
                     continue
 
-            # 获取 Unwrap 事件日志
-            unwrap_logs = w3.eth.get_logs({
-                'fromBlock': 'latest',
-                'address': contracts['destination']['address'],
-                'topics': [destination_contract.events.Unwrap().abi['signature']]  # 获取事件签名
-            })
+                # 拿到目标合约实例
+                target_contract = target_w3.eth.contract(
+                    address=contracts[target_chain]['address'],
+                    abi=contracts[target_chain]['abi']
+                )
 
-            for log in unwrap_logs:
-                try:
-                    # 使用 .process_log() 方法来解析日志
-                    event = destination_contract.events.Unwrap().process_log(log)
-                    print(f"Unwrap event found: {event['args']}")
-                    
-                    # 调用 source chain 上的 withdraw 函数
-                    src_w3 = connect_to('source')
-                    if src_w3:
-                        src_contract = src_w3.eth.contract(
-                            address=contracts['source']['address'],
-                            abi=contracts['source']['abi']
-                        )
-                        tx_hash = src_contract.functions.withdraw(
-                            event['args']['underlying_token'],
-                            event['args']['to'],
-                            event['args']['amount']
-                        ).transact({
-                            'from': src_w3.eth.default_account,
-                            'gas': 300000,
-                            'gasPrice': Web3.to_wei('10', 'gwei')
-                        })
-                        print(f"Withdraw tx sent: {tx_hash.hex()}")
-                except Exception as e:
-                    print(f"Error processing Unwrap: {str(e)}")
-                    continue
+                # 根据事件类型构造参数，调用目标函数
+                if chain == 'source':
+                    # Deposit 事件参数对应 wrap 函数
+                    tx = target_contract.functions.wrap(
+                        event_args['token'],
+                        event_args['recipient'],
+                        event_args['amount']
+                    ).transact({
+                        'from': target_w3.eth.default_account,
+                        'gas': 300000,
+                        'gasPrice': Web3.to_wei('10', 'gwei')
+                    })
+                else:
+                    # Unwrap 事件参数对应 withdraw 函数
+                    tx = target_contract.functions.withdraw(
+                        event_args['underlying_token'],
+                        event_args['to'],
+                        event_args['amount']
+                    ).transact({
+                        'from': target_w3.eth.default_account,
+                        'gas': 300000,
+                        'gasPrice': Web3.to_wei('10', 'gwei')
+                    })
 
-            # You can add a sleep to avoid overwhelming the node with requests
+                print(f"Sent {target_func} transaction: {tx.hex()}")
+
+            # 避免高频请求，休眠 5 秒
             time.sleep(5)
 
         return 1
-        
     except Exception as e:
         print(f"Error in scan_blocks: {str(e)}")
         return 0
