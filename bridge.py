@@ -72,20 +72,20 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             abi=contracts['destination']['abi']
         )
 
-        # Create filters for Deposit and Unwrap events
-        deposit_filter = source_contract.events.Deposit.createFilter(fromBlock='latest')
-        unwrap_filter = destination_contract.events.Unwrap.createFilter(fromBlock='latest')
+        # 使用 w3.eth.filter 创建事件过滤器
+        deposit_filter = w3.eth.filter({'fromBlock': 'latest', 'address': contracts['source']['address'], 'topics': [source_contract.events.Deposit().signature]})
+        unwrap_filter = w3.eth.filter({'fromBlock': 'latest', 'address': contracts['destination']['address'], 'topics': [destination_contract.events.Unwrap().signature]})
 
         # Scan events using the filter
         while True:
-            # Get the logs for Deposit events on source chain
+            # 获取 Deposit 事件
             deposit_logs = deposit_filter.get_new_entries()
             for log in deposit_logs:
                 try:
                     event = source_contract.events.Deposit().processLog(log)
                     print(f"Deposit event found: {event['args']}")
                     
-                    # Call wrap on destination chain
+                    # 调用 destination chain 上的 wrap 函数
                     dest_w3 = connect_to('destination')
                     if dest_w3:
                         dest_contract = dest_w3.eth.contract(
@@ -106,14 +106,14 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                     print(f"Error processing Deposit: {str(e)}")
                     continue
 
-            # Get the logs for Unwrap events on destination chain
+            # 获取 Unwrap 事件
             unwrap_logs = unwrap_filter.get_new_entries()
             for log in unwrap_logs:
                 try:
                     event = destination_contract.events.Unwrap().processLog(log)
                     print(f"Unwrap event found: {event['args']}")
                     
-                    # Call withdraw on source chain
+                    # 调用 source chain 上的 withdraw 函数
                     src_w3 = connect_to('source')
                     if src_w3:
                         src_contract = src_w3.eth.contract(
