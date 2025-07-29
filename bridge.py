@@ -1,145 +1,170 @@
 from web3 import Web3
+from web3.providers.rpc import HTTPProvider
+from web3.middleware import ExtraDataToPOAMiddleware
+from datetime import datetime
 import json
 import time
-import sys
 import os
+import sys
 from dotenv import load_dotenv
 
-# 加载.env中的私钥
+# Load .env environment variables
 load_dotenv()
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 
-# 读取ABI
-with open("contract_info.json", "r") as f:
-    bridge_abi = json.load(f)
+# Connect to chain using Infura API URLs
+def connect_to(chain):
+    if chain == 'source':
+        api_url = "https://avalanche-fuji.infura.io/v3/5e1abd5de2ac4dbda6e952eddc4394ca"
+    elif chain == 'destination':
+        api_url = "https://bsc-testnet.infura.io/v3/5e1abd5de2ac4dbda6e952eddc4394ca"
+    else:
+        return None
 
-# 链接设置
-CHAINS = {
-    "source": {
-        "name": "AVAX Fuji",
-        "rpc": "https://api.avax-test.network/ext/bc/C/rpc",
-        "contract_address": "0x1CEbD30A2F15C33a3d6D9A10bC75d1c6Ff91A59B"
-    },
-    "destination": {
-        "name": "BSC Testnet",
-        "rpc": "https://data-seed-prebsc-1-s1.binance.org:8545/",
-        "contract_address": "0x514C850B8c113f74cbB29Ee8bE8120f2a33C20e5"
-    }
-}
+    w3 = Web3(Web3.HTTPProvider(api_url))
+    w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+    return w3
 
-# 链接 Web3
-def connect(chain_name):
-    chain = CHAINS[chain_name]
-    w3 = Web3(Web3.HTTPProvider(chain["rpc"]))
-    assert w3.is_connected(), f"Failed to connect to {chain_name}"
-    contract = w3.eth.contract(address=Web3.to_checksum_address(chain["contract_address"]), abi=bridge_abi)
-    return w3, contract
-
-# 处理 Deposit 事件
-def handle_deposit(event, current_chain, target_chain):
-    print(f"\n⛓️ Detected deposit event on {current_chain}:")
-    from_addr = event["args"]["from"]
-    to_addr = event["args"]["to"]
-    amount = event["args"]["amount"]
-
-    # 构造目标链交易
-    target_w3, target_contract = connect(target_chain)
-    warden = target_w3.eth.account.from_key(PRIVATE_KEY)
-    nonce = target_w3.eth.get_transaction_count(warden.address)
-
-    tx = target_contract.functions.wrap(from_addr, to_addr, amount).build_transaction({
-        "from": warden.address,
-        "nonce": nonce,
-        "gas": 300000,
-        "gasPrice": target_w3.to_wei("5", "gwei")
-    })
-
-    signed_tx = target_w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    tx_hash = target_w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-    print(f"✅ Wrap transaction sent to {target_chain}. Tx hash: {tx_hash.hex()}")
-
-# 处理 Unwrap 事件
-def handle_unwrap(event, current_chain, target_chain):
-    print(f"\n⛓️ Detected unwrap event on {current_chain}:")
-    from_addr = event["args"]["from"]
-    to_addr = event["args"]["to"]
-    amount = event["args"]["amount"]
-
-    current_w3, current_contract = connect(current_chain)
-    warden = current_w3.eth.account.from_key(PRIVATE_KEY)
-    nonce = current_w3.eth.get_transaction_count(warden.address)
-
-    tx = current_contract.functions.release(from_addr, to_addr, amount).build_transaction({
-        "from": warden.address,
-        "nonce": nonce,
-        "gas": 300000,
-        "gasPrice": current_w3.to_wei("5", "gwei")
-    })
-
-    signed_tx = current_w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    tx_hash = current_w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-    print(f"✅ Release transaction sent to {current_chain}. Tx hash: {tx_hash.hex()}")
-
-# Autograder 使用的入口函数：扫描并处理区块中的事件（非循环）
-def scan_blocks(chain_name):
-    current_chain = chain_name
-    target_chain = "destination" if current_chain == "source" else "source"
-
-    w3, contract = connect(current_chain)
-    latest = w3.eth.block_number
-    start_block = max(0, latest - 20)
-
-    print(f"📦 Scanning blocks {start_block} to {latest} on {current_chain}...")
-
+# Load contract info from JSON file
+def get_contract_info(chain=None, contract_info="contract_info.json"):
     try:
-        # 扫描 Deposit 事件
-        deposit_logs = contract.events.Deposit().get_logs(from_block=start_block, to_block=latest)
-        for event in deposit_logs:
-            handle_deposit(event, current_chain, target_chain)
-
-        # 扫描 Unwrap 事件
-        unwrap_logs = contract.events.Unwrap().get_logs(from_block=start_block, to_block=latest)
-        for event in unwrap_logs:
-            handle_unwrap(event, current_chain, target_chain)
-
-        print(f"✅ Finished scanning {current_chain} chain.")
+        with open(contract_info, 'r') as f:
+            contracts = json.load(f)
     except Exception as e:
-        print(f"❌ Error during scan: {e}")
+        print(f"Failed to read contract_info.json: {e}")
+        return 0
 
-# 可选：本地运行监听器（不是 autograder 入口）
-def watch_events(chain_name):
-    current_chain = chain_name
-    target_chain = "destination" if current_chain == "source" else "source"
-    w3, contract = connect(current_chain)
-    print(f"🔍 Listening for events on {current_chain} chain...")
+    if chain:
+        return contracts.get(chain, {})
+    return contracts
 
-    last_block = w3.eth.block_number
+# Scan chain blocks and handle events
+def scan_blocks(chain, contract_info="contract_info.json"):
+    if chain not in ['source', 'destination']:
+        print(f"Invalid chain: {chain}")
+        return 0
+
+    contracts = get_contract_info(None, contract_info)
+
+    # Get private key
+    warden_pk = os.getenv("PRIVATE_KEY")
+    if not warden_pk:
+        print("Missing PRIVATE_KEY in .env file")
+        return 0
+
+    # Connect to both chains
+    current_w3 = connect_to(chain)
+    target_chain = 'destination' if chain == 'source' else 'source'
+    target_w3 = connect_to(target_chain)
+
+    current_contract = current_w3.eth.contract(
+        address=contracts[chain]["address"],
+        abi=contracts[chain]["abi"]
+    )
+
+    target_contract = target_w3.eth.contract(
+        address=contracts[target_chain]["address"],
+        abi=contracts[target_chain]["abi"]
+    )
+
+    warden_addr = current_w3.eth.account.from_key(warden_pk).address
+    print(f"🔐 Warden Address: {warden_addr}")
+
+    # Handle Deposit Event
+    def handle_deposit(event):
+        token_id = event["args"]["token"]
+        amount = event["args"]["amount"]
+        user = event["args"]["recipient"]
+        print(f"[{datetime.now()}] Deposit detected → token={token_id}, amount={amount}, user={user}")
+
+        try:
+            wrapped_token = target_contract.functions.underlying_tokens(token_id).call()
+
+            tx = target_contract.functions.wrap(
+                token_id, user, amount
+            ).build_transaction({
+                "from": warden_addr,
+                "nonce": target_w3.eth.get_transaction_count(warden_addr),
+                "gas": 300000,
+                "gasPrice": target_w3.eth.gas_price
+            })
+
+            signed_tx = target_w3.eth.account.sign_transaction(tx, warden_pk)
+            tx_hash = target_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            print(f"🟢 Wrap transaction sent: {tx_hash.hex()}")
+
+            receipt = target_w3.eth.wait_for_transaction_receipt(tx_hash)
+            print("✅ Wrap successful" if receipt.status == 1 else "❌ Wrap failed")
+            time.sleep(10)
+
+        except Exception as e:
+            print(f"❗ Wrap failed: {str(e)}")
+
+    # Handle Unwrap Event
+    def handle_unwrap(event):
+        token_id = event["args"]["wrapped_token"]
+        amount = event["args"]["amount"]
+        user = event["args"]["to"]
+        print(f"[{datetime.now()}] Unwrap detected → token={token_id}, amount={amount}, user={user}")
+
+        try:
+            underlying_token = target_contract.functions.wrapped_tokens(token_id).call()
+
+            tx = current_contract.functions.withdraw(
+                underlying_token, user, amount
+            ).build_transaction({
+                "from": warden_addr,
+                "nonce": current_w3.eth.get_transaction_count(warden_addr),
+                "gas": 300000,
+                "gasPrice": current_w3.eth.gas_price
+            })
+
+            signed_tx = current_w3.eth.account.sign_transaction(tx, warden_pk)
+            tx_hash = current_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            print(f"🟢 Withdraw transaction sent: {tx_hash.hex()}")
+
+            receipt = current_w3.eth.wait_for_transaction_receipt(tx_hash)
+            print("✅ Withdraw successful" if receipt.status == 1 else "❌ Withdraw failed")
+            time.sleep(10)
+
+        except Exception as e:
+            print(f"❗ Withdraw failed: {str(e)}")
+
+    # Start block scanning
+    start_block = current_w3.eth.block_number - 5
+    print(f"📡 Scanning {chain} from block {start_block}...")
 
     while True:
         try:
-            new_block = w3.eth.block_number
-            if new_block > last_block:
-                for block_num in range(last_block + 1, new_block + 1):
-                    deposit_logs = contract.events.Deposit().get_logs(from_block=block_num, to_block=block_num)
-                    for event in deposit_logs:
-                        handle_deposit(event, current_chain, target_chain)
+            if chain == 'source':
+                logs = current_contract.events.Deposit.get_logs(
+                    from_block=start_block,
+                    to_block='latest'
+                )
+                for log in logs:
+                    handle_deposit(log)
 
-                    unwrap_logs = contract.events.Unwrap().get_logs(from_block=block_num, to_block=block_num)
-                    for event in unwrap_logs:
-                        handle_unwrap(event, current_chain, target_chain)
+            elif chain == 'destination':
+                logs = current_contract.events.Unwrap.get_logs(
+                    from_block=start_block,
+                    to_block='latest'
+                )
+                for log in logs:
+                    handle_unwrap(log)
 
-                last_block = new_block
-
-            time.sleep(2)
-        except Exception as e:
-            print(f"⚠️ Error while watching events: {e}")
+            start_block = current_w3.eth.block_number
             time.sleep(5)
 
-# 脚本主入口（本地运行用）
-if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in CHAINS:
-        print("Usage: python bridge.py [source|destination]")
-        sys.exit(1)
+        except Exception as e:
+            print(f"⚠️ Error while scanning: {str(e)}")
+            time.sleep(10)
 
-    chain_name = sys.argv[1]
-    watch_events(chain_name)
+# Entrypoint
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        chain_arg = sys.argv[1]
+        if chain_arg in ['source', 'destination']:
+            scan_blocks(chain_arg)
+        else:
+            print("Usage: python bridge.py [source|destination]")
+    else:
+        print("Usage: python bridge.py [source|destination]")
