@@ -85,9 +85,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
     # 6. 处理Deposit事件（源链 -> 目标链）
     def handle_deposit(event):
-        token_id = event["args"]["token"]  # 注意：根据你的ABI，可能是"token"而非"tokenId"
+        token_id = event["args"]["token"]  # 根据你的ABI调整
         amount = event["args"]["amount"]
-        user = event["args"]["recipient"]  # 根据你的ABI，可能是"recipient"而非"user"
+        user = event["args"]["recipient"]  # 根据你的ABI调整
         print(f"[{datetime.now()}] 检测到源链Deposit事件: token={token_id}, amount={amount}, user={user}")
 
         try:
@@ -96,9 +96,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             
             # 构建并发送wrap交易
             tx = target_contract.functions.wrap(
-                token_id,  # 根据你的ABI，第一个参数应该是underlying_token
-                user,      # 第二个参数是接收者地址
-                amount     # 第三个参数是数量
+                token_id,      # 根据你的ABI，第一个参数应该是underlying_token
+                user,          # 第二个参数是接收者地址
+                amount         # 第三个参数是数量
             ).build_transaction({
                 "from": warden_addr,
                 "nonce": target_w3.eth.get_transaction_count(warden_addr),
@@ -106,8 +106,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                 "gasPrice": target_w3.eth.gas_price
             })
 
+            # 适配Web3.py 6.x的交易签名和发送
             signed_tx = target_w3.eth.account.sign_transaction(tx, warden_pk)
-            tx_hash = target_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            tx_hash = target_w3.eth.send_raw_transaction(signed_tx["rawTransaction"])
             print(f"[{datetime.now()}] 已发送wrap交易: {tx_hash.hex()}")
             
             # 等待交易确认
@@ -145,8 +146,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                 "gasPrice": current_w3.eth.gas_price
             })
 
+            # 适配Web3.py 6.x的交易签名和发送
             signed_tx = current_w3.eth.account.sign_transaction(tx, warden_pk)
-            tx_hash = current_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            tx_hash = current_w3.eth.send_raw_transaction(signed_tx["rawTransaction"])
             print(f"[{datetime.now()}] 已发送withdraw交易: {tx_hash.hex()}")
             
             # 等待交易确认
