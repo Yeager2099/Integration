@@ -85,9 +85,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
     # 6. 处理Deposit事件（源链 -> 目标链）
     def handle_deposit(event):
-        token_id = event["args"]["tokenId"]
+        token_id = event["args"]["token"]  # 注意：根据你的ABI，可能是"token"而非"tokenId"
         amount = event["args"]["amount"]
-        user = event["args"]["user"]
+        user = event["args"]["recipient"]  # 根据你的ABI，可能是"recipient"而非"user"
         print(f"[{datetime.now()}] 检测到源链Deposit事件: token={token_id}, amount={amount}, user={user}")
 
         try:
@@ -96,9 +96,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             
             # 构建并发送wrap交易
             tx = target_contract.functions.wrap(
-                wrapped_token,
-                amount,
-                user
+                token_id,  # 根据你的ABI，第一个参数应该是underlying_token
+                user,      # 第二个参数是接收者地址
+                amount     # 第三个参数是数量
             ).build_transaction({
                 "from": warden_addr,
                 "nonce": target_w3.eth.get_transaction_count(warden_addr),
@@ -124,30 +124,33 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
     # 7. 处理Unwrap事件（目标链 -> 源链）
     def handle_unwrap(event):
-        token_id = event["args"]["tokenId"]
+        token_id = event["args"]["wrapped_token"]  # 根据你的ABI调整
         amount = event["args"]["amount"]
-        user = event["args"]["user"]
+        user = event["args"]["to"]  # 根据你的ABI调整
         print(f"[{datetime.now()}] 检测到目标链Unwrap事件: token={token_id}, amount={amount}, user={user}")
 
         try:
+            # 查找源链上对应的原始代币
+            underlying_token = target_contract.functions.wrapped_tokens(token_id).call()
+            
             # 构建并发送withdraw交易
-            tx = target_contract.functions.withdraw(
-                token_id,
-                amount,
-                user
+            tx = current_contract.functions.withdraw(
+                underlying_token,  # 注意这里使用的是源链合约
+                user,
+                amount
             ).build_transaction({
                 "from": warden_addr,
-                "nonce": target_w3.eth.get_transaction_count(warden_addr),
+                "nonce": current_w3.eth.get_transaction_count(warden_addr),
                 "gas": 300000,
-                "gasPrice": target_w3.eth.gas_price
+                "gasPrice": current_w3.eth.gas_price
             })
 
-            signed_tx = target_w3.eth.account.sign_transaction(tx, warden_pk)
-            tx_hash = target_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            signed_tx = current_w3.eth.account.sign_transaction(tx, warden_pk)
+            tx_hash = current_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
             print(f"[{datetime.now()}] 已发送withdraw交易: {tx_hash.hex()}")
             
             # 等待交易确认
-            receipt = target_w3.eth.wait_for_transaction_receipt(tx_hash)
+            receipt = current_w3.eth.wait_for_transaction_receipt(tx_hash)
             if receipt.status == 1:
                 print(f"[{datetime.now()}] Withdraw交易成功")
             else:
@@ -166,18 +169,20 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         try:
             # 源链监听Deposit事件
             if chain == 'source':
+                # 使用新版参数名 from_block 和 to_block
                 events = current_contract.events.Deposit.get_logs(
-                    fromBlock=start_block,
-                    toBlock='latest'
+                    from_block=start_block,
+                    to_block='latest'
                 )
                 for event in events:
                     handle_deposit(event)
 
             # 目标链监听Unwrap事件
             elif chain == 'destination':
+                # 使用新版参数名 from_block 和 to_block
                 events = current_contract.events.Unwrap.get_logs(
-                    fromBlock=start_block,
-                    toBlock='latest'
+                    from_block=start_block,
+                    to_block='latest'
                 )
                 for event in events:
                     handle_unwrap(event)
@@ -186,6 +191,11 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             start_block = current_w3.eth.block_number
             time.sleep(5)  # 每5秒检查一次新事件
 
+        except TypeError as e:
+            print(f"[{datetime.now()}] 参数错误: {str(e)}")
+            print("请检查Web3.py版本是否兼容，或参数名称是否正确")
+            time.sleep(30)  # 遇到参数错误，延长等待时间
+            
         except Exception as e:
             print(f"[{datetime.now()}] 监听过程中出错: {str(e)}")
             time.sleep(10)  # 出错后等待10秒再继续
