@@ -10,7 +10,7 @@ load_dotenv()
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 
 # 读取ABI
-with open("Bridge.json", "r") as f:
+with open("contract_info.json", "r") as f:
     bridge_abi = json.load(f)
 
 # 链接设置
