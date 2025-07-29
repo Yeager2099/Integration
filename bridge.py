@@ -4,132 +4,121 @@ import json
 import os
 from dotenv import load_dotenv
 
-# 加载 .env 文件
+# 加载环境变量
 load_dotenv()
-
-# 获取环境变量中的 PRIVATE_KEY
 private_key = os.getenv("PRIVATE_KEY")
 if not private_key:
-    raise ValueError("Private key is not set in the environment variables.")
-else:
-    print("Private key loaded successfully.")
+    raise ValueError("Private key not found in .env")
 
-def connect_to(chain):
-    if chain == 'source':  # AVAX C-chain testnet
-        api_url = "https://api.avax-test.network/ext/bc/C/rpc"
-    elif chain == 'destination':  # BSC testnet
-        api_url = "https://data-seed-prebsc-1-s1.binance.org:8545/"
-    else:
-        return None
+# 链配置
+CHAIN_CONFIG = {
+    'source': {
+        'rpc': "https://api.avax-test.network/ext/bc/C/rpc",
+        'name': 'AVAX'
+    },
+    'destination': {
+        'rpc': "https://data-seed-prebsc-1-s1.binance.org:8545/",
+        'name': 'BSC'
+    }
+}
 
-    w3 = Web3(Web3.HTTPProvider(api_url))
+def connect_to_chain(chain):
+    """连接指定链并返回 Web3 实例和账户"""
+    if chain not in CHAIN_CONFIG:
+        raise ValueError(f"Unsupported chain: {chain}")
+    
+    w3 = Web3(Web3.HTTPProvider(CHAIN_CONFIG[chain]['rpc']))
     w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     
     if not w3.is_connected():
-        print(f"Failed to connect to {chain} chain")
-        return None
+        raise ConnectionError(f"Failed to connect to {CHAIN_CONFIG[chain]['name']}")
     
-    # 从环境变量中获取私钥
-    private_key = os.getenv("PRIVATE_KEY")
-    if private_key:
-        account = w3.eth.account.from_key(private_key)
-        w3.eth.default_account = account.address
-    return w3
+    account = w3.eth.account.from_key(private_key)
+    w3.eth.default_account = account.address
+    return w3, account
 
-
-def get_contract_info(contract_info="contract_info.json"):
+def load_contracts():
+    """从 contract_info.json 加载合约信息"""
     try:
-        with open(contract_info) as f:
-            return json.load(f)
+        with open('contract_info.json') as f:
+            contracts = json.load(f)
+        return contracts
     except Exception as e:
-        print(f"Error loading contract info: {e}")
-        return None
+        raise IOError(f"Error loading contract info: {e}")
 
+def process_deposit_event(event, dest_w3, dest_contract):
+    """处理源链 Deposit 事件，调用目标链的 wrap 函数"""
+    tx = dest_contract.functions.wrap(
+        event['args']['token'],
+        event['args']['recipient'],
+        event['args']['amount']
+    ).build_transaction({
+        'chainId': dest_w3.eth.chain_id,
+        'gas': 300000,
+        'gasPrice': Web3.to_wei('10', 'gwei'),
+        'nonce': dest_w3.eth.get_transaction_count(dest_w3.eth.default_account),
+    })
+    signed_tx = dest_w3.eth.account.sign_transaction(tx, private_key)
+    tx_hash = dest_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    print(f"Bridged to {CHAIN_CONFIG['destination']['name']}: {tx_hash.hex()}")
 
-def scan_blocks(chain, contract_info="contract_info.json"):
-    if chain not in ['source', 'destination']:
-        print(f"Invalid chain: {chain}")
-        return 0
+def process_unwrap_event(event, src_w3, src_contract):
+    """处理目标链 Unwrap 事件，调用源链的 withdraw 函数"""
+    tx = src_contract.functions.withdraw(
+        event['args']['underlying_token'],
+        event['args']['to'],
+        event['args']['amount']
+    ).build_transaction({
+        'chainId': src_w3.eth.chain_id,
+        'gas': 300000,
+        'gasPrice': Web3.to_wei('10', 'gwei'),
+        'nonce': src_w3.eth.get_transaction_count(src_w3.eth.default_account),
+    })
+    signed_tx = src_w3.eth.account.sign_transaction(tx, private_key)
+    tx_hash = src_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    print(f"Bridged back to {CHAIN_CONFIG['source']['name']}: {tx_hash.hex()}")
 
-    w3 = connect_to(chain)
-    if not w3:
-        return 0
+def scan_blocks():
+    """监听两条链的事件并触发跨链交易"""
+    contracts = load_contracts()
+    
+    # 连接源链和目标链
+    src_w3, src_account = connect_to_chain('source')
+    dest_w3, dest_account = connect_to_chain('destination')
+    
+    # 加载合约实例
+    src_contract = src_w3.eth.contract(
+        address=contracts['source']['address'],
+        abi=contracts['source']['abi']
+    )
+    dest_contract = dest_w3.eth.contract(
+        address=contracts['destination']['address'],
+        abi=contracts['destination']['abi']
+    )
+    
+    # 设置监听的区块范围（最近 20 个区块）
+    start_block = src_w3.eth.block_number - 20
+    end_block = src_w3.eth.block_number
+    
+    # 监听源链 Deposit 事件
+    deposit_filter = src_contract.events.Deposit.create_filter(
+        from_block=start_block,
+        to_block=end_block,
+        argument_filters={}
+    )
+    for event in deposit_filter.get_all_entries():
+        print(f"Deposit event: {event}")
+        process_deposit_event(event, dest_w3, dest_contract)
+    
+    # 监听目标链 Unwrap 事件
+    unwrap_filter = dest_contract.events.Unwrap.create_filter(
+        from_block=start_block,
+        to_block=end_block,
+        argument_filters={}
+    )
+    for event in unwrap_filter.get_all_entries():
+        print(f"Unwrap event: {event}")
+        process_unwrap_event(event, src_w3, src_contract)
 
-    contracts = get_contract_info(contract_info)
-    if not contracts:
-        return 0
-
-    try:
-        # Load contracts
-        source_contract = w3.eth.contract(
-            address=contracts['source']['address'],
-            abi=contracts['source']['abi']
-        )
-        destination_contract = w3.eth.contract(
-            address=contracts['destination']['address'],
-            abi=contracts['destination']['abi']
-        )
-
-        # 设置起始和结束区块（根据需求设置）
-        start_block = w3.eth.block_number - 5  # 最近5个区块
-        end_block = w3.eth.block_number
-
-        # 使用过滤器创建监听 Deposit 事件
-        deposit_filter = source_contract.events.Deposit.create_filter(
-            from_block=start_block,
-            to_block=end_block
-        )
-
-        # 获取所有 Deposit 事件
-        for event in deposit_filter.get_all_entries():
-            print(f"Deposit event found: {event.args}")
-            # 处理 Deposit 事件，调用 wrap 函数
-            dest_w3 = connect_to('destination')
-            if dest_w3:
-                dest_contract = dest_w3.eth.contract(
-                    address=contracts['destination']['address'],
-                    abi=contracts['destination']['abi']
-                )
-                tx_hash = dest_contract.functions.wrap(
-                    event.args.token,
-                    event.args.recipient,
-                    event.args.amount
-                ).transact({
-                    'from': dest_w3.eth.default_account,
-                    'gas': 300000,
-                    'gasPrice': Web3.to_wei('10', 'gwei')
-                })
-                print(f"Wrap tx sent: {tx_hash.hex()}")
-
-        # 使用过滤器创建监听 Unwrap 事件
-        unwrap_filter = destination_contract.events.Unwrap.create_filter(
-            from_block=start_block,
-            to_block=end_block
-        )
-
-        # 获取所有 Unwrap 事件
-        for event in unwrap_filter.get_all_entries():
-            print(f"Unwrap event found: {event.args}")
-            # 处理 Unwrap 事件，调用 withdraw 函数
-            src_w3 = connect_to('source')
-            if src_w3:
-                src_contract = src_w3.eth.contract(
-                    address=contracts['source']['address'],
-                    abi=contracts['source']['abi']
-                )
-                tx_hash = src_contract.functions.withdraw(
-                    event.args.underlying_token,
-                    event.args.to,
-                    event.args.amount
-                ).transact({
-                    'from': src_w3.eth.default_account,
-                    'gas': 300000,
-                    'gasPrice': Web3.to_wei('10', 'gwei')
-                })
-                print(f"Withdraw tx sent: {tx_hash.hex()}")
-
-        return 1
-
-    except Exception as e:
-        print(f"Error in scan_blocks: {str(e)}")
-        return 0
+if __name__ == "__main__":
+    scan_blocks()
