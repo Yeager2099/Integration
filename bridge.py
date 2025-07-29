@@ -2,28 +2,31 @@ from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 import json
 import os
+import csv
 from dotenv import load_dotenv
 
-# 加载环境变量
+# 初始化环境
 load_dotenv()
 private_key = os.getenv("PRIVATE_KEY")
 if not private_key:
-    raise ValueError("Private key not found in .env")
+    raise ValueError("PRIVATE_KEY not found in .env")
 
 # 链配置
 CHAIN_CONFIG = {
     'source': {
         'rpc': "https://api.avax-test.network/ext/bc/C/rpc",
-        'name': 'AVAX'
+        'name': 'AVAX',
+        'explorer': 'https://testnet.snowtrace.io/tx/'
     },
     'destination': {
         'rpc': "https://data-seed-prebsc-1-s1.binance.org:8545/",
-        'name': 'BSC'
+        'name': 'BSC',
+        'explorer': 'https://testnet.bscscan.com/tx/'
     }
 }
 
 def connect_to_chain(chain):
-    """连接指定链并返回 Web3 实例和账户"""
+    """连接区块链并返回Web3实例和账户"""
     if chain not in CHAIN_CONFIG:
         raise ValueError(f"Unsupported chain: {chain}")
     
@@ -38,128 +41,125 @@ def connect_to_chain(chain):
     return w3, account
 
 def load_contracts():
-    """从 contract_info.json 加载合约信息"""
+    """加载合约信息"""
     try:
         with open('contract_info.json') as f:
-            contracts = json.load(f)
-        return contracts
+            return json.load(f)
     except Exception as e:
-        raise IOError(f"Error loading contract info: {e}")
+        raise IOError(f"Error loading contract_info.json: {e}")
 
-def process_deposit_event(event, dest_w3, dest_contract):
-    """处理源链 Deposit 事件，调用目标链的 wrap 函数"""
-    tx = dest_contract.functions.wrap(
-        event['args']['token'],
-        event['args']['recipient'],
-        event['args']['amount']
-    ).build_transaction({
-        'chainId': dest_w3.eth.chain_id,
-        'gas': 300000,
-        'gasPrice': Web3.to_wei('10', 'gwei'),
-        'nonce': dest_w3.eth.get_transaction_count(dest_w3.eth.default_account),
-    })
-    signed_tx = dest_w3.eth.account.sign_transaction(tx, private_key)
-    tx_hash = dest_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-    print(f"Bridged to {CHAIN_CONFIG['destination']['name']}: {tx_hash.hex()}")
+def load_tokens():
+    """加载代币映射"""
+    try:
+        with open('erc20s.csv') as f:
+            return list(csv.reader(f))
+    except Exception as e:
+        raise IOError(f"Error loading erc20s.csv: {e}")
 
-def process_unwrap_event(event, src_w3, src_contract):
-    """处理目标链 Unwrap 事件，调用源链的 withdraw 函数"""
-    tx = src_contract.functions.withdraw(
-        event['args']['underlying_token'],
-        event['args']['to'],
-        event['args']['amount']
-    ).build_transaction({
-        'chainId': src_w3.eth.chain_id,
-        'gas': 300000,
-        'gasPrice': Web3.to_wei('10', 'gwei'),
-        'nonce': src_w3.eth.get_transaction_count(src_w3.eth.default_account),
-    })
-    signed_tx = src_w3.eth.account.sign_transaction(tx, private_key)
-    tx_hash = src_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-    print(f"Bridged back to {CHAIN_CONFIG['source']['name']}: {tx_hash.hex()}")
+def verify_token_registration():
+    """验证代币是否已正确注册"""
+    contracts = load_contracts()
+    tokens = load_tokens()
+    
+    for chain in ['source', 'destination']:
+        w3, _ = connect_to_chain(chain)
+        contract = w3.eth.contract(
+            address=contracts[chain]['address'],
+            abi=contracts[chain]['abi']
+        )
+        
+        for token in tokens:
+            if chain == 'source':
+                registered = contract.functions.registeredTokens(token[1]).call()
+                print(f"{token[0]} on {chain}: Registered={registered}")
+            else:
+                exists = contract.functions.tokenMapping(token[2]).call()
+                print(f"{token[0]} on {chain}: Exists={bool(exists)}")
 
-def scan_blocks(chain, contract_info="contract_info.json"):
+def process_event(event, target_chain, action):
+    """处理事件并发送跨链交易"""
+    contracts = load_contracts()
+    w3, account = connect_to_chain(target_chain)
+    
+    contract = w3.eth.contract(
+        address=contracts[target_chain]['address'],
+        abi=contracts[target_chain]['abi']
+    )
+    
+    try:
+        if action == 'wrap':
+            tx = contract.functions.wrap(
+                event['args']['token'],
+                event['args']['recipient'],
+                event['args']['amount']
+            ).build_transaction({
+                'chainId': w3.eth.chain_id,
+                'gas': 500000,
+                'gasPrice': Web3.to_wei('20', 'gwei'),
+                'nonce': w3.eth.get_transaction_count(account.address),
+            })
+        elif action == 'withdraw':
+            tx = contract.functions.withdraw(
+                event['args']['underlying_token'],
+                event['args']['to'],
+                event['args']['amount']
+            ).build_transaction({
+                'chainId': w3.eth.chain_id,
+                'gas': 500000,
+                'gasPrice': Web3.to_wei('20', 'gwei'),
+                'nonce': w3.eth.get_transaction_count(account.address),
+            })
+        
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        print(f"{action.upper()} success! {CHAIN_CONFIG[target_chain]['explorer']}{tx_hash.hex()}")
+        return receipt.status == 1
+    except Exception as e:
+        print(f"{action.upper()} failed: {str(e)}")
+        return False
+
+def scan_blocks(chain):
+    """监听指定链的事件"""
+    if chain not in ['source', 'destination']:
+        raise ValueError("Chain must be 'source' or 'destination'")
+    
     contracts = load_contracts()
     w3, _ = connect_to_chain(chain)
+    contract = w3.eth.contract(
+        address=contracts[chain]['address'],
+        abi=contracts[chain]['abi']
+    )
     
-    # 设置更大的区块范围（确保覆盖测试交易）
+    # 监听最近200个区块确保覆盖测试交易
     latest_block = w3.eth.block_number
-    start_block = latest_block - 100  # 检查最近100个区块
-    end_block = latest_block
-
+    start_block = max(latest_block - 200, 0)
+    
+    print(f"Scanning {chain} chain (blocks {start_block}-{latest_block})")
+    
     if chain == 'source':
-        contract = w3.eth.contract(
-            address=contracts['source']['address'],
-            abi=contracts['source']['abi']
-        )
-        # 监听Deposit事件（添加argument_filters）
-        event_filter = contract.events.Deposit.create_filter(
-            from_block=start_block,
-            to_block=end_block,
-            argument_filters={}
-        )
-        events = event_filter.get_all_entries()
+        events = contract.events.Deposit.get_logs(fromBlock=start_block)
         print(f"Found {len(events)} Deposit events")
-        
         for event in events:
             print(f"Processing Deposit: {event}")
-            dest_w3, _ = connect_to_chain('destination')
-            dest_contract = dest_w3.eth.contract(
-                address=contracts['destination']['address'],
-                abi=contracts['destination']['abi']
-            )
-            # 增加Gas限制和重试机制
-            try:
-                tx = dest_contract.functions.wrap(
-                    event['args']['token'],
-                    event['args']['recipient'],
-                    event['args']['amount']
-                ).build_transaction({
-                    'chainId': dest_w3.eth.chain_id,
-                    'gas': 500000,  # 提高Gas限制
-                    'gasPrice': Web3.to_wei('20', 'gwei'),  # 提高Gas价格
-                    'nonce': dest_w3.eth.get_transaction_count(dest_w3.eth.default_account),
-                })
-                signed_tx = dest_w3.eth.account.sign_transaction(tx, private_key)
-                tx_hash = dest_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-                print(f"Wrap tx sent: {tx_hash.hex()}")
-            except Exception as e:
-                print(f"Wrap failed: {str(e)}")
-
-    elif chain == 'destination':
-        contract = w3.eth.contract(
-            address=contracts['destination']['address'],
-            abi=contracts['destination']['abi']
-        )
-        # 监听Unwrap事件
-        event_filter = contract.events.Unwrap.create_filter(
-            from_block=start_block,
-            to_block=end_block,
-            argument_filters={}
-        )
-        events = event_filter.get_all_entries()
+            process_event(event, 'destination', 'wrap')
+    else:
+        events = contract.events.Unwrap.get_logs(fromBlock=start_block)
         print(f"Found {len(events)} Unwrap events")
-        
         for event in events:
             print(f"Processing Unwrap: {event}")
-            src_w3, _ = connect_to_chain('source')
-            src_contract = src_w3.eth.contract(
-                address=contracts['source']['address'],
-                abi=contracts['source']['abi']
-            )
-            try:
-                tx = src_contract.functions.withdraw(
-                    event['args']['underlying_token'],
-                    event['args']['to'],
-                    event['args']['amount']
-                ).build_transaction({
-                    'chainId': src_w3.eth.chain_id,
-                    'gas': 500000,
-                    'gasPrice': Web3.to_wei('20', 'gwei'),
-                    'nonce': src_w3.eth.get_transaction_count(src_w3.eth.default_account),
-                })
-                signed_tx = src_w3.eth.account.sign_transaction(tx, private_key)
-                tx_hash = src_w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-                print(f"Withdraw tx sent: {tx_hash.hex()}")
-            except Exception as e:
-                print(f"Withdraw failed: {str(e)}")
+            process_event(event, 'source', 'withdraw')
+
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == 'verify_tokens':
+        verify_token_registration()
+    elif len(sys.argv) > 1 and sys.argv[1] in ['source', 'destination']:
+        scan_blocks(sys.argv[1])
+    else:
+        print("Usage:")
+        print("  python bridge.py verify_tokens  # 验证代币注册状态")
+        print("  python bridge.py source        # 监听源链")
+        print("  python bridge.py destination   # 监听目标链")
