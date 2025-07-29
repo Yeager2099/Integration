@@ -1,10 +1,8 @@
 from web3 import Web3
-from web3.providers.rpc import HTTPProvider
 from web3.middleware import ExtraDataToPOAMiddleware
 import json
 import os
-from dotenv import load_dotenv  # 导入dotenv模块
-import time
+from dotenv import load_dotenv
 
 # 加载 .env 文件
 load_dotenv()
@@ -62,87 +60,76 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         return 0
 
     try:
-        # 区分源链和目标链的合约和事件
-        if chain == 'source':
-            contract = w3.eth.contract(
-                address=contracts['source']['address'],
-                abi=contracts['source']['abi']
-            )
-            event_name = 'Deposit'
-            target_chain = 'destination'
-            target_function = 'wrap'
-        else:
-            contract = w3.eth.contract(
-                address=contracts['destination']['address'],
-                abi=contracts['destination']['abi']
-            )
-            event_name = 'Unwrap'
-            target_chain = 'source'
-            target_function = 'withdraw'
+        # Load contracts
+        source_contract = w3.eth.contract(
+            address=contracts['source']['address'],
+            abi=contracts['source']['abi']
+        )
+        destination_contract = w3.eth.contract(
+            address=contracts['destination']['address'],
+            abi=contracts['destination']['abi']
+        )
 
-        # 创建事件过滤器
-        event_filter = contract.events[event_name].create_filter(fromBlock='latest')
-        print(f"Started listening for {event_name} events on {chain} chain")
+        # 设置起始和结束区块（根据需求设置）
+        start_block = w3.eth.block_number - 5  # 最近5个区块
+        end_block = w3.eth.block_number
 
-        while True:
-            # 获取新事件
-            for event in event_filter.get_new_entries():
-                print(f"New {event_name} event detected: {event}")
-                event_args = event['args']
+        # 使用过滤器创建监听 Deposit 事件
+        deposit_filter = source_contract.events.Deposit.create_filter(
+            from_block=start_block,
+            to_block=end_block
+        )
 
-                # 连接目标链
-                target_w3 = connect_to(target_chain)
-                if not target_w3:
-                    print(f"Failed to connect to {target_chain} chain")
-                    continue
-
-                # 获取目标合约
-                target_contract = target_w3.eth.contract(
-                    address=contracts[target_chain]['address'],
-                    abi=contracts[target_chain]['abi']
+        # 获取所有 Deposit 事件
+        for event in deposit_filter.get_all_entries():
+            print(f"Deposit event found: {event.args}")
+            # 处理 Deposit 事件，调用 wrap 函数
+            dest_w3 = connect_to('destination')
+            if dest_w3:
+                dest_contract = dest_w3.eth.contract(
+                    address=contracts['destination']['address'],
+                    abi=contracts['destination']['abi']
                 )
+                tx_hash = dest_contract.functions.wrap(
+                    event.args.token,
+                    event.args.recipient,
+                    event.args.amount
+                ).transact({
+                    'from': dest_w3.eth.default_account,
+                    'gas': 300000,
+                    'gasPrice': Web3.to_wei('10', 'gwei')
+                })
+                print(f"Wrap tx sent: {tx_hash.hex()}")
 
-                # 根据事件类型准备参数
-                if event_name == 'Deposit':
-                    # 调用目标链的 wrap 函数
-                    tx_args = [
-                        event_args['token'],       # 源链代币地址
-                        event_args['recipient'],   # 接收者地址
-                        event_args['amount']       # 金额
-                    ]
-                else:
-                    # 调用源链的 withdraw 函数
-                    tx_args = [
-                        event_args['underlying_token'],  # 源链代币地址
-                        event_args['to'],                # 接收者地址
-                        event_args['amount']             # 金额
-                    ]
+        # 使用过滤器创建监听 Unwrap 事件
+        unwrap_filter = destination_contract.events.Unwrap.create_filter(
+            from_block=start_block,
+            to_block=end_block
+        )
 
-                # 发送交易
-                try:
-                    # 估算 gas
-                    gas_estimate = target_contract.functions[target_function](*tx_args).estimate_gas({
-                        'from': target_w3.eth.default_account
-                    })
-                    
-                    # 发送交易
-                    tx_hash = target_contract.functions[target_function](*tx_args).transact({
-                        'from': target_w3.eth.default_account,
-                        'gas': int(gas_estimate * 1.2),  # 添加 20% 的缓冲
-                        'gasPrice': Web3.to_wei('10', 'gwei')
-                    })
-                    
-                    print(f"Sent {target_function} transaction: {tx_hash.hex()}")
-                    
-                except Exception as e:
-                    print(f"Failed to send {target_function} transaction: {str(e)}")
-
-            time.sleep(5)  # 避免频繁查询
+        # 获取所有 Unwrap 事件
+        for event in unwrap_filter.get_all_entries():
+            print(f"Unwrap event found: {event.args}")
+            # 处理 Unwrap 事件，调用 withdraw 函数
+            src_w3 = connect_to('source')
+            if src_w3:
+                src_contract = src_w3.eth.contract(
+                    address=contracts['source']['address'],
+                    abi=contracts['source']['abi']
+                )
+                tx_hash = src_contract.functions.withdraw(
+                    event.args.underlying_token,
+                    event.args.to,
+                    event.args.amount
+                ).transact({
+                    'from': src_w3.eth.default_account,
+                    'gas': 300000,
+                    'gasPrice': Web3.to_wei('10', 'gwei')
+                })
+                print(f"Withdraw tx sent: {tx_hash.hex()}")
 
         return 1
-        
+
     except Exception as e:
-        import traceback
         print(f"Error in scan_blocks: {str(e)}")
-        traceback.print_exc()  # 打印完整错误堆栈
         return 0
