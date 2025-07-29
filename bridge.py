@@ -38,7 +38,6 @@ def connect(chain_name):
 # 处理 Deposit 事件
 def handle_deposit(event, current_chain, target_chain):
     print(f"\n⛓️ Detected deposit event on {current_chain}:")
-    print(event)
     from_addr = event["args"]["from"]
     to_addr = event["args"]["to"]
     amount = event["args"]["amount"]
@@ -62,7 +61,6 @@ def handle_deposit(event, current_chain, target_chain):
 # 处理 Unwrap 事件
 def handle_unwrap(event, current_chain, target_chain):
     print(f"\n⛓️ Detected unwrap event on {current_chain}:")
-    print(event)
     from_addr = event["args"]["from"]
     to_addr = event["args"]["to"]
     amount = event["args"]["amount"]
@@ -82,13 +80,37 @@ def handle_unwrap(event, current_chain, target_chain):
     tx_hash = current_w3.eth.send_raw_transaction(signed_tx.raw_transaction)
     print(f"✅ Release transaction sent to {current_chain}. Tx hash: {tx_hash.hex()}")
 
-# 监听事件
-def watch_events(chain_name):
+# Autograder 使用的入口函数：扫描并处理区块中的事件（非循环）
+def scan_blocks(chain_name):
     current_chain = chain_name
     target_chain = "destination" if current_chain == "source" else "source"
 
     w3, contract = connect(current_chain)
+    latest = w3.eth.block_number
+    start_block = max(0, latest - 20)
 
+    print(f"📦 Scanning blocks {start_block} to {latest} on {current_chain}...")
+
+    try:
+        # 扫描 Deposit 事件
+        deposit_logs = contract.events.Deposit().get_logs(from_block=start_block, to_block=latest)
+        for event in deposit_logs:
+            handle_deposit(event, current_chain, target_chain)
+
+        # 扫描 Unwrap 事件
+        unwrap_logs = contract.events.Unwrap().get_logs(from_block=start_block, to_block=latest)
+        for event in unwrap_logs:
+            handle_unwrap(event, current_chain, target_chain)
+
+        print(f"✅ Finished scanning {current_chain} chain.")
+    except Exception as e:
+        print(f"❌ Error during scan: {e}")
+
+# 可选：本地运行监听器（不是 autograder 入口）
+def watch_events(chain_name):
+    current_chain = chain_name
+    target_chain = "destination" if current_chain == "source" else "source"
+    w3, contract = connect(current_chain)
     print(f"🔍 Listening for events on {current_chain} chain...")
 
     last_block = w3.eth.block_number
@@ -113,7 +135,7 @@ def watch_events(chain_name):
             print(f"⚠️ Error while watching events: {e}")
             time.sleep(5)
 
-# 启动脚本
+# 脚本主入口（本地运行用）
 if __name__ == "__main__":
     if len(sys.argv) != 2 or sys.argv[1] not in CHAINS:
         print("Usage: python bridge.py [source|destination]")
