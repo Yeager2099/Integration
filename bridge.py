@@ -36,7 +36,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         return
 
     # Load credentials
-    PRIVATE_KEY = os.getenv("Private key")
+    PRIVATE_KEY = os.getenv("PRIVATE_KEY")
     if not PRIVATE_KEY:
         print("Missing private key in .env file")
         return
