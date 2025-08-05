@@ -64,47 +64,42 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     print(f"\n>>> Scanning {chain} blocks {from_block} to {to_block}")
 
     if chain == 'source':
-        # Handle Deposit -> wrap on destination
-        event_filter = contract.events.Deposit.create_filter(fromBlock=from_block, toBlock=to_block)
-        events = event_filter.get_all_entries()
-        for e in events:
-            token = e["args"]["token"]
-            recipient = e["args"]["recipient"]
-            amount = e["args"]["amount"]
-            print(f"[SOURCE] Detected Deposit | Token: {token} | Recipient: {recipient} | Amount: {amount}")
+    events = contract.events.Deposit.get_logs(fromBlock=from_block, toBlock=to_block)
+    for e in events:
+        token = e["args"]["token"]
+        recipient = e["args"]["recipient"]
+        amount = e["args"]["amount"]
+        print(f"[SOURCE] Detected Deposit | Token: {token} | Recipient: {recipient} | Amount: {amount}")
 
-            nonce = w3_other.eth.get_transaction_count(acct.address)
-            tx = other_contract.functions.wrap(token, recipient, amount).build_transaction({
-                'chainId': w3_other.eth.chain_id,
-                'gas': 500000,
-                'gasPrice': w3_other.eth.gas_price,
-                'nonce': nonce
-            })
-            signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-            tx_hash = w3_other.eth.send_raw_transaction(signed_tx.rawTransaction)
-            print(f"[DESTINATION] Sent wrap() tx: {tx_hash.hex()}")
+        nonce = w3_other.eth.get_transaction_count(acct.address)
+        tx = other_contract.functions.wrap(token, recipient, amount).build_transaction({
+            'chainId': w3_other.eth.chain_id,
+            'gas': 500000,
+            'gasPrice': w3_other.eth.gas_price,
+            'nonce': nonce
+        })
+        signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+        tx_hash = w3_other.eth.send_raw_transaction(signed_tx.rawTransaction)
+        print(f"[DESTINATION] Sent wrap() tx: {tx_hash.hex()}")
 
     elif chain == 'destination':
-        # Handle Unwrap -> withdraw on source
-        event_filter = contract.events.Unwrap.create_filter(fromBlock=from_block, toBlock=to_block)
-        events = event_filter.get_all_entries()
-        for e in events:
-            token = e["args"]["underlying_token"]
-            recipient = e["args"]["to"]
-            amount = e["args"]["amount"]
-            print(f"[DESTINATION] Detected Unwrap | Token: {token} | Recipient: {recipient} | Amount: {amount}")
+    events = contract.events.Unwrap.get_logs(fromBlock=from_block, toBlock=to_block)
+    for e in events:
+        token = e["args"]["underlying_token"]
+        recipient = e["args"]["to"]
+        amount = e["args"]["amount"]
+        print(f"[DESTINATION] Detected Unwrap | Token: {token} | Recipient: {recipient} | Amount: {amount}")
 
-            nonce = w3_other.eth.get_transaction_count(acct.address)
-            tx = other_contract.functions.withdraw(token, recipient, amount).build_transaction({
-                'chainId': w3_other.eth.chain_id,
-                'gas': 500000,
-                'gasPrice': w3_other.eth.gas_price,
-                'nonce': nonce
-            })
-            signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-            tx_hash = w3_other.eth.send_raw_transaction(signed_tx.rawTransaction)
-            print(f"[SOURCE] Sent withdraw() tx: {tx_hash.hex()}")
-
+        nonce = w3_other.eth.get_transaction_count(acct.address)
+        tx = other_contract.functions.withdraw(token, recipient, amount).build_transaction({
+            'chainId': w3_other.eth.chain_id,
+            'gas': 500000,
+            'gasPrice': w3_other.eth.gas_price,
+            'nonce': nonce
+        })
+        signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+        tx_hash = w3_other.eth.send_raw_transaction(signed_tx.rawTransaction)
+        print(f"[SOURCE] Sent withdraw() tx: {tx_hash.hex()}")
 
 if __name__ == "__main__":
     scan_blocks('source')      # handle AVAX->BSC
