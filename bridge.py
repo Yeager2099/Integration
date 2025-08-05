@@ -65,7 +65,8 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
     if chain == 'source':
         # Handle Deposit -> wrap on destination
-        events = contract.events.Deposit().get_logs(fromBlock=from_block, toBlock=to_block)
+        event_filter = contract.events.Deposit.create_filter(fromBlock=from_block, toBlock=to_block)
+        events = event_filter.get_all_entries()
         for e in events:
             token = e["args"]["token"]
             recipient = e["args"]["recipient"]
@@ -85,7 +86,8 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
     elif chain == 'destination':
         # Handle Unwrap -> withdraw on source
-        events = contract.events.Unwrap().get_logs(fromBlock=from_block, toBlock=to_block)
+        event_filter = contract.events.Unwrap.create_filter(fromBlock=from_block, toBlock=to_block)
+        events = event_filter.get_all_entries()
         for e in events:
             token = e["args"]["underlying_token"]
             recipient = e["args"]["to"]
