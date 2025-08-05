@@ -64,7 +64,10 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     print(f"\n>>> Scanning {chain} blocks {from_block} to {to_block}")
 
     if chain == 'source':
-        events = contract.events.Deposit.get_logs(fromBlock=from_block, toBlock=to_block)
+        events = contract.events.Deposit.get_logs({
+            'fromBlock': from_block,
+            'toBlock': to_block
+        })
         for e in events:
             token = e["args"]["token"]
             recipient = e["args"]["recipient"]
@@ -83,7 +86,10 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             print(f"[DESTINATION] Sent wrap() tx: {tx_hash.hex()}")
 
     elif chain == 'destination':
-        events = contract.events.Unwrap.get_logs(fromBlock=from_block, toBlock=to_block)
+        events = contract.events.Unwrap.get_logs({
+            'fromBlock': from_block,
+            'toBlock': to_block
+        })
         for e in events:
             token = e["args"]["underlying_token"]
             recipient = e["args"]["to"]
