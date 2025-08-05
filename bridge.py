@@ -35,18 +35,18 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         print(f"Invalid chain: {chain}")
         return
 
-    # Load private key and create account
+    # Load credentials
     PRIVATE_KEY = os.getenv("PRIVATE_KEY")
     if not PRIVATE_KEY:
         print("Missing private key in .env file")
         return
     acct = Account.from_key(PRIVATE_KEY)
 
-    # Connect to current chain and the opposite chain
+    # Connect to current and opposite chains
     w3 = connect_to(chain)
     w3_other = connect_to('destination' if chain == 'source' else 'source')
 
-    # Load contract info for both chains
+    # Load contracts
     this_info = get_contract_info(chain, contract_info)
     other_info = get_contract_info('destination' if chain == 'source' else 'source', contract_info)
     if not this_info or not other_info:
@@ -56,7 +56,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     contract = w3.eth.contract(address=this_info["address"], abi=this_info["abi"])
     other_contract = w3_other.eth.contract(address=other_info["address"], abi=other_info["abi"])
 
-    # Define scanning block range
+    # Block range for scanning
     latest_block = w3.eth.block_number
     from_block = max(0, latest_block - 5)
     to_block = latest_block
@@ -64,12 +64,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     print(f"\n>>> Scanning {chain} blocks from {from_block} to {to_block}")
 
     if chain == 'source':
-        event_filter = contract.events.Deposit.create_filter(
-            from_block=from_block,
-            to_block=to_block,
-            argument_filters={}
-        )
-        for e in event_filter.get_all_entries():
+        event_filter = contract.events.Deposit.create_filter(from_block=from_block, to_block=to_block)
+        events = event_filter.get_all_entries()
+        for e in events:
             token = e["args"]["token"]
             recipient = e["args"]["recipient"]
             amount = e["args"]["amount"]
@@ -83,16 +80,13 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                 'nonce': nonce
             })
             signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-            tx_hash = w3_other.eth.send_raw_transaction(signed_tx.rawTransaction)
+            tx_hash = w3_other.eth.send_raw_transaction(signed_tx.raw_transaction)
             print(f"[DESTINATION] Sent wrap() tx: {tx_hash.hex()}")
 
     elif chain == 'destination':
-        event_filter = contract.events.Unwrap.create_filter(
-            from_block=from_block,
-            to_block=to_block,
-            argument_filters={}
-        )
-        for e in event_filter.get_all_entries():
+        event_filter = contract.events.Unwrap.create_filter(from_block=from_block, to_block=to_block)
+        events = event_filter.get_all_entries()
+        for e in events:
             token = e["args"]["underlying_token"]
             recipient = e["args"]["to"]
             amount = e["args"]["amount"]
@@ -106,7 +100,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                 'nonce': nonce
             })
             signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-            tx_hash = w3_other.eth.send_raw_transaction(signed_tx.rawTransaction)
+            tx_hash = w3_other.eth.send_raw_transaction(signed_tx.raw_transaction)
             print(f"[SOURCE] Sent withdraw() tx: {tx_hash.hex()}")
 
 
