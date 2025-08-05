@@ -1,170 +1,109 @@
 from web3 import Web3
-from web3.providers.rpc import HTTPProvider
 from web3.middleware import ExtraDataToPOAMiddleware
-from datetime import datetime
-import json
-import time
-import os
-import sys
+from eth_account import Account
 from dotenv import load_dotenv
+import os
+import json
 
-# Load .env environment variables
 load_dotenv()
 
-# Connect to chain using Infura API URLs
 def connect_to(chain):
-    if chain == 'source':
-        api_url = "https://avalanche-fuji.infura.io/v3/5e1abd5de2ac4dbda6e952eddc4394ca"
-    elif chain == 'destination':
-        api_url = "https://bsc-testnet.infura.io/v3/5e1abd5de2ac4dbda6e952eddc4394ca"
+    if chain == 'source':  # AVAX Testnet
+        api_url = f"https://api.avax-test.network/ext/bc/C/rpc"
+    elif chain == 'destination':  # BSC Testnet
+        api_url = f"https://data-seed-prebsc-1-s1.binance.org:8545/"
     else:
-        return None
+        raise Exception("Unknown chain name.")
 
     w3 = Web3(Web3.HTTPProvider(api_url))
     w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     return w3
 
-# Load contract info from JSON file
-def get_contract_info(chain=None, contract_info="contract_info.json"):
+
+def get_contract_info(chain, contract_info="contract_info.json"):
     try:
         with open(contract_info, 'r') as f:
             contracts = json.load(f)
     except Exception as e:
-        print(f"Failed to read contract_info.json: {e}")
-        return 0
+        print(f"Failed to read contract info:\n{e}")
+        return None
+    return contracts[chain]
 
-    if chain:
-        return contracts.get(chain, {})
-    return contracts
 
-# Scan chain blocks and handle events
 def scan_blocks(chain, contract_info="contract_info.json"):
     if chain not in ['source', 'destination']:
         print(f"Invalid chain: {chain}")
-        return 0
+        return
 
-    contracts = get_contract_info(None, contract_info)
+    # Load credentials
+    PRIVATE_KEY = os.getenv("Private key")
+    if not PRIVATE_KEY:
+        print("Missing private key in .env file")
+        return
+    acct = Account.from_key(PRIVATE_KEY)
 
-    # Get private key
-    warden_pk = os.getenv("PRIVATE_KEY")
-    if not warden_pk:
-        print("Missing PRIVATE_KEY in .env file")
-        return 0
+    # Connect to current and opposite chains
+    w3 = connect_to(chain)
+    w3_other = connect_to('destination' if chain == 'source' else 'source')
 
-    # Connect to both chains
-    current_w3 = connect_to(chain)
-    target_chain = 'destination' if chain == 'source' else 'source'
-    target_w3 = connect_to(target_chain)
+    # Load contracts
+    this_info = get_contract_info(chain, contract_info)
+    other_info = get_contract_info('destination' if chain == 'source' else 'source', contract_info)
+    if not this_info or not other_info:
+        print("Failed to load contract info")
+        return
 
-    current_contract = current_w3.eth.contract(
-        address=contracts[chain]["address"],
-        abi=contracts[chain]["abi"]
-    )
+    contract = w3.eth.contract(address=this_info["address"], abi=this_info["abi"])
+    other_contract = w3_other.eth.contract(address=other_info["address"], abi=other_info["abi"])
 
-    target_contract = target_w3.eth.contract(
-        address=contracts[target_chain]["address"],
-        abi=contracts[target_chain]["abi"]
-    )
+    # Block range for scanning
+    latest_block = w3.eth.block_number
+    from_block = max(0, latest_block - 5)
+    to_block = latest_block
 
-    warden_addr = current_w3.eth.account.from_key(warden_pk).address
-    print(f"🔐 Warden Address: {warden_addr}")
+    print(f"\n>>> Scanning {chain} blocks {from_block} to {to_block}")
 
-    # Handle Deposit Event
-    def handle_deposit(event):
-        token_id = event["args"]["token"]
-        amount = event["args"]["amount"]
-        user = event["args"]["recipient"]
-        print(f"[{datetime.now()}] Deposit detected → token={token_id}, amount={amount}, user={user}")
+    if chain == 'source':
+        # Handle Deposit -> wrap on destination
+        events = contract.events.Deposit().get_logs(fromBlock=from_block, toBlock=to_block)
+        for e in events:
+            token = e["args"]["token"]
+            recipient = e["args"]["recipient"]
+            amount = e["args"]["amount"]
+            print(f"[SOURCE] Detected Deposit | Token: {token} | Recipient: {recipient} | Amount: {amount}")
 
-        try:
-            wrapped_token = target_contract.functions.underlying_tokens(token_id).call()
-
-            tx = target_contract.functions.wrap(
-                token_id, user, amount
-            ).build_transaction({
-                "from": warden_addr,
-                "nonce": target_w3.eth.get_transaction_count(warden_addr),
-                "gas": 300000,
-                "gasPrice": target_w3.eth.gas_price
+            nonce = w3_other.eth.get_transaction_count(acct.address)
+            tx = other_contract.functions.wrap(token, recipient, amount).build_transaction({
+                'chainId': w3_other.eth.chain_id,
+                'gas': 500000,
+                'gasPrice': w3_other.eth.gas_price,
+                'nonce': nonce
             })
+            signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+            tx_hash = w3_other.eth.send_raw_transaction(signed_tx.rawTransaction)
+            print(f"[DESTINATION] Sent wrap() tx: {tx_hash.hex()}")
 
-            signed_tx = target_w3.eth.account.sign_transaction(tx, warden_pk)
-            tx_hash = target_w3.eth.send_raw_transaction(signed_tx.data)
-            print(f"🟢 Wrap transaction sent: {tx_hash.hex()}")
+    elif chain == 'destination':
+        # Handle Unwrap -> withdraw on source
+        events = contract.events.Unwrap().get_logs(fromBlock=from_block, toBlock=to_block)
+        for e in events:
+            token = e["args"]["underlying_token"]
+            recipient = e["args"]["to"]
+            amount = e["args"]["amount"]
+            print(f"[DESTINATION] Detected Unwrap | Token: {token} | Recipient: {recipient} | Amount: {amount}")
 
-            receipt = target_w3.eth.wait_for_transaction_receipt(tx_hash)
-            print("✅ Wrap successful" if receipt.status == 1 else "❌ Wrap failed")
-            time.sleep(10)
-
-        except Exception as e:
-            print(f"❗ Wrap failed: {str(e)}")
-
-    # Handle Unwrap Event
-    def handle_unwrap(event):
-        token_id = event["args"]["wrapped_token"]
-        amount = event["args"]["amount"]
-        user = event["args"]["to"]
-        print(f"[{datetime.now()}] Unwrap detected → token={token_id}, amount={amount}, user={user}")
-
-        try:
-            underlying_token = target_contract.functions.wrapped_tokens(token_id).call()
-
-            tx = current_contract.functions.withdraw(
-                underlying_token, user, amount
-            ).build_transaction({
-                "from": warden_addr,
-                "nonce": current_w3.eth.get_transaction_count(warden_addr),
-                "gas": 300000,
-                "gasPrice": current_w3.eth.gas_price
+            nonce = w3_other.eth.get_transaction_count(acct.address)
+            tx = other_contract.functions.withdraw(token, recipient, amount).build_transaction({
+                'chainId': w3_other.eth.chain_id,
+                'gas': 500000,
+                'gasPrice': w3_other.eth.gas_price,
+                'nonce': nonce
             })
+            signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+            tx_hash = w3_other.eth.send_raw_transaction(signed_tx.rawTransaction)
+            print(f"[SOURCE] Sent withdraw() tx: {tx_hash.hex()}")
 
-            signed_tx = current_w3.eth.account.sign_transaction(tx, warden_pk)
-            tx_hash = current_w3.eth.send_raw_transaction(signed_tx.data)
-            print(f"🟢 Withdraw transaction sent: {tx_hash.hex()}")
 
-            receipt = current_w3.eth.wait_for_transaction_receipt(tx_hash)
-            print("✅ Withdraw successful" if receipt.status == 1 else "❌ Withdraw failed")
-            time.sleep(10)
-
-        except Exception as e:
-            print(f"❗ Withdraw failed: {str(e)}")
-
-    # Start block scanning
-    start_block = current_w3.eth.block_number - 5
-    print(f"📡 Scanning {chain} from block {start_block}...")
-
-    while True:
-        try:
-            if chain == 'source':
-                logs = current_contract.events.Deposit.get_logs(
-                    from_block=start_block,
-                    to_block='latest'
-                )
-                for log in logs:
-                    handle_deposit(log)
-
-            elif chain == 'destination':
-                logs = current_contract.events.Unwrap.get_logs(
-                    from_block=start_block,
-                    to_block='latest'
-                )
-                for log in logs:
-                    handle_unwrap(log)
-
-            start_block = current_w3.eth.block_number
-            time.sleep(5)
-
-        except Exception as e:
-            print(f"⚠️ Error while scanning: {str(e)}")
-            time.sleep(10)
-
-# Entrypoint
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        chain_arg = sys.argv[1]
-        if chain_arg in ['source', 'destination']:
-            scan_blocks(chain_arg)
-        else:
-            print("Usage: python bridge.py [source|destination]")
-    else:
-        print("Usage: python bridge.py [source|destination]")
+    scan_blocks('source')      # handle AVAX->BSC
+    scan_blocks('destination') # handle BSC->AVAX
