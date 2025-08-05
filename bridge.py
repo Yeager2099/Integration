@@ -9,9 +9,9 @@ load_dotenv()
 
 def connect_to(chain):
     if chain == 'source':  # AVAX Testnet
-        api_url = f"https://api.avax-test.network/ext/bc/C/rpc"
+        api_url = "https://api.avax-test.network/ext/bc/C/rpc"
     elif chain == 'destination':  # BSC Testnet
-        api_url = f"https://data-seed-prebsc-1-s1.binance.org:8545/"
+        api_url = "https://data-seed-prebsc-1-s1.binance.org:8545/"
     else:
         raise Exception("Unknown chain name.")
 
@@ -35,18 +35,18 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         print(f"Invalid chain: {chain}")
         return
 
-    # Load credentials
+    # Load private key and create account
     PRIVATE_KEY = os.getenv("PRIVATE_KEY")
     if not PRIVATE_KEY:
         print("Missing private key in .env file")
         return
     acct = Account.from_key(PRIVATE_KEY)
 
-    # Connect to current and opposite chains
+    # Connect to current chain and the opposite chain
     w3 = connect_to(chain)
     w3_other = connect_to('destination' if chain == 'source' else 'source')
 
-    # Load contracts
+    # Load contract info for both chains
     this_info = get_contract_info(chain, contract_info)
     other_info = get_contract_info('destination' if chain == 'source' else 'source', contract_info)
     if not this_info or not other_info:
@@ -56,19 +56,20 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     contract = w3.eth.contract(address=this_info["address"], abi=this_info["abi"])
     other_contract = w3_other.eth.contract(address=other_info["address"], abi=other_info["abi"])
 
-    # Block range for scanning
+    # Define scanning block range
     latest_block = w3.eth.block_number
     from_block = max(0, latest_block - 5)
     to_block = latest_block
 
-    print(f"\n>>> Scanning {chain} blocks {from_block} to {to_block}")
+    print(f"\n>>> Scanning {chain} blocks from {from_block} to {to_block}")
 
     if chain == 'source':
-        events = contract.events.Deposit.get_logs({
-            'fromBlock': from_block,
-            'toBlock': to_block
-        })
-        for e in events:
+        event_filter = contract.events.Deposit.create_filter(
+            from_block=from_block,
+            to_block=to_block,
+            argument_filters={}
+        )
+        for e in event_filter.get_all_entries():
             token = e["args"]["token"]
             recipient = e["args"]["recipient"]
             amount = e["args"]["amount"]
@@ -86,11 +87,12 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             print(f"[DESTINATION] Sent wrap() tx: {tx_hash.hex()}")
 
     elif chain == 'destination':
-        events = contract.events.Unwrap.get_logs({
-            'fromBlock': from_block,
-            'toBlock': to_block
-        })
-        for e in events:
+        event_filter = contract.events.Unwrap.create_filter(
+            from_block=from_block,
+            to_block=to_block,
+            argument_filters={}
+        )
+        for e in event_filter.get_all_entries():
             token = e["args"]["underlying_token"]
             recipient = e["args"]["to"]
             amount = e["args"]["amount"]
