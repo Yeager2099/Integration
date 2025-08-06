@@ -63,6 +63,10 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
     print(f"\n>>> Scanning {chain} blocks from {from_block} to {to_block}")
 
+    # WARDEN_ROLE constant hash, 用于权限检查
+    WARDEN_ROLE = w3.keccak(text="BRIDGE_WARDEN_ROLE")
+    ADMIN_ROLE = w3.keccak(text="ADMIN_ROLE")
+
     if chain == 'source':
         event_filter = contract.events.Deposit.create_filter(from_block=from_block, to_block=to_block)
         events = event_filter.get_all_entries()
@@ -71,6 +75,17 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             recipient = e["args"]["recipient"]
             amount = e["args"]["amount"]
             print(f"[SOURCE] Detected Deposit | Token: {token} | Recipient: {recipient} | Amount: {amount}")
+
+            # 检查 token 是否注册
+            is_approved = contract.functions.approved(token).call()
+            print(f"[SOURCE] Token {token} approved? {is_approved}")
+            if not is_approved:
+                print("[SOURCE] Token not approved, skipping wrap.")
+                continue
+
+            # 检查对端账户是否有 WARDEN_ROLE，避免 withdraw 调用失败
+            has_warden_role = contract.functions.hasRole(WARDEN_ROLE, acct.address).call()
+            print(f"[SOURCE] Account {acct.address} has WARDEN_ROLE? {has_warden_role}")
 
             nonce = w3_other.eth.get_transaction_count(acct.address)
             tx = other_contract.functions.wrap(token, recipient, amount).build_transaction({
@@ -91,6 +106,20 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             recipient = e["args"]["to"]
             amount = e["args"]["amount"]
             print(f"[DESTINATION] Detected Unwrap | Token: {token} | Recipient: {recipient} | Amount: {amount}")
+
+            # 检查 token 是否注册
+            is_approved = other_contract.functions.approved(token).call()
+            print(f"[DESTINATION] Token {token} approved in source? {is_approved}")
+            if not is_approved:
+                print("[DESTINATION] Token not approved on source, skipping withdraw.")
+                continue
+
+            # 检查账户是否有权限
+            has_warden_role = other_contract.functions.hasRole(WARDEN_ROLE, acct.address).call()
+            print(f"[DESTINATION] Account {acct.address} has WARDEN_ROLE on source? {has_warden_role}")
+            if not has_warden_role:
+                print("[DESTINATION] Account lacks WARDEN_ROLE on source, withdraw aborted.")
+                continue
 
             nonce = w3_other.eth.get_transaction_count(acct.address)
             tx = other_contract.functions.withdraw(token, recipient, amount).build_transaction({
