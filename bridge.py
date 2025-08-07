@@ -85,12 +85,15 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         event_filter = contract.events.Unwrap.create_filter(from_block=from_block, to_block=to_block)
         events = event_filter.get_all_entries()
         for e in events:
-            token = e["args"]["underlying_token"]
-            recipient = e["args"]["to"]
+            underlying_token = e["args"]["underlying_token"]
+            wrapped_token = e["args"]["wrapped_token"]
+            frm = e["args"]["frm"]
+            to = e["args"]["to"]
             amount = e["args"]["amount"]
-            print(f"[DESTINATION] Detected Unwrap | Token: {token} | Recipient: {recipient} | Amount: {amount}")
 
-            tx = other_contract.functions.withdraw(token, recipient, amount).build_transaction({
+            print(f"[DESTINATION] Detected Unwrap | Token: {underlying_token} | Recipient: {to} | Amount: {amount}")
+
+            tx = other_contract.functions.withdraw(underlying_token, to, amount).build_transaction({
                 'chainId': w3_other.eth.chain_id,
                 'gas': 500000,
                 'gasPrice': w3_other.eth.gas_price,
