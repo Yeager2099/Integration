@@ -4,6 +4,7 @@ from eth_account import Account
 from dotenv import load_dotenv
 import os
 import json
+import time
 
 load_dotenv()
 
@@ -53,7 +54,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     other_contract = w3_other.eth.contract(address=other_info["address"], abi=other_info["abi"])
 
     latest_block = w3.eth.block_number
-    from_block = max(0, latest_block - 5)
+    from_block = max(0, latest_block - 20)  # 增加扫描范围
     to_block = latest_block
 
     print(f"\n>>> Scanning {chain} blocks from {from_block} to {to_block}")
@@ -69,15 +70,31 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             amount = e["args"]["amount"]
             print(f"[SOURCE] Detected Deposit | Token: {token} | Recipient: {recipient} | Amount: {amount}")
 
-            tx = other_contract.functions.wrap(token, recipient, amount).build_transaction({
-                'chainId': w3_other.eth.chain_id,
-                'gas': 500000,
-                'gasPrice': w3_other.eth.gas_price,
-                'nonce': nonce
-            })
-            signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-            tx_hash = w3_other.eth.send_raw_transaction(signed_tx.raw_transaction)
-            print(f"[DESTINATION] Sent wrap() tx: {tx_hash.hex()}")
+            # 检查目标链是否已注册该代币
+            try:
+                wrapped_token = other_contract.functions.wrapped_tokens(token).call()
+                if wrapped_token == '0x0000000000000000000000000000000000000000':
+                    print(f"Token {token} not registered on destination chain")
+                    continue
+            except Exception as e:
+                print(f"Error checking token registration: {e}")
+                continue
+
+            try:
+                tx = other_contract.functions.wrap(token, recipient, amount).build_transaction({
+                    'chainId': w3_other.eth.chain_id,
+                    'gas': 800000,  # 增加gas限制
+                    'gasPrice': w3_other.eth.gas_price,
+                    'nonce': nonce
+                })
+                signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+                tx_hash = w3_other.eth.send_raw_transaction(signed_tx.raw_transaction)
+                receipt = w3_other.eth.wait_for_transaction_receipt(tx_hash)
+                print(f"[DESTINATION] Wrap tx confirmed in block {receipt['blockNumber']}")
+                print(f"Transaction Hash: {tx_hash.hex()}")
+            except Exception as e:
+                print(f"Error executing wrap: {e}")
+                continue
 
             nonce += 1
 
@@ -90,14 +107,32 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             amount = e["args"]["amount"]
             print(f"[DESTINATION] Detected Unwrap | Token: {token} | Recipient: {recipient} | Amount: {amount}")
 
-            tx = other_contract.functions.withdraw(token, recipient, amount).build_transaction({
-                'chainId': w3_other.eth.chain_id,
-                'gas': 500000,
-                'gasPrice': w3_other.eth.gas_price,
-                'nonce': nonce
-            })
-            signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-            tx_hash = w3_other.eth.send_raw_transaction(signed_tx.raw_transaction)
-            print(f"[SOURCE] Sent withdraw() tx: {tx_hash.hex()}")
+            # 检查源链是否已批准该代币
+            try:
+                is_approved = other_contract.functions.approved(token).call()
+                if not is_approved:
+                    print(f"Token {token} not approved on source chain")
+                    continue
+            except Exception as e:
+                print(f"Error checking token approval: {e}")
+                continue
+
+            try:
+                tx = other_contract.functions.withdraw(token, recipient, amount).build_transaction({
+                    'chainId': w3_other.eth.chain_id,
+                    'gas': 800000,  # 增加gas限制
+                    'gasPrice': w3_other.eth.gas_price,
+                    'nonce': nonce
+                })
+                signed_tx = w3_other.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
+                tx_hash = w3_other.eth.send_raw_transaction(signed_tx.raw_transaction)
+                receipt = w3_other.eth.wait_for_transaction_receipt(tx_hash)
+                print(f"[SOURCE] Withdraw tx confirmed in block {receipt['blockNumber']}")
+                print(f"Transaction Hash: {tx_hash.hex()}")
+            except Exception as e:
+                print(f"Error executing withdraw: {e}")
+                continue
 
             nonce += 1
+
+    print(">>> Scan completed")
