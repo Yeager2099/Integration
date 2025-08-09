@@ -1,12 +1,12 @@
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 from eth_account import Account
-from dotenv import load_dotenv
 import os
 import json
 import time
 
-load_dotenv()
+# 硬编码测试网私钥（仅用于作业测试，实际项目中永远不要硬编码私钥！）
+PRIVATE_KEY = "0x950dd91788d82b9ca2eb2417d2b26e9a3bea12d0f37b7b5e417ae87a1630f52c"
 
 def connect_to(chain):
     if chain == 'source':
@@ -34,9 +34,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         print(f"Invalid chain: {chain}")
         return
 
-    PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+    # 直接使用硬编码的私钥
     if not PRIVATE_KEY:
-        print("Missing private key in .env file")
+        print("Error: Private key not set")
         return
     acct = Account.from_key(PRIVATE_KEY)
 
@@ -54,7 +54,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     other_contract = w3_other.eth.contract(address=other_info["address"], abi=other_info["abi"])
 
     latest_block = w3.eth.block_number
-    from_block = max(0, latest_block - 20)  # 增加扫描范围
+    from_block = max(0, latest_block - 20)  # 扫描最近20个区块
     to_block = latest_block
 
     print(f"\n>>> Scanning {chain} blocks from {from_block} to {to_block}")
@@ -83,7 +83,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             try:
                 tx = other_contract.functions.wrap(token, recipient, amount).build_transaction({
                     'chainId': w3_other.eth.chain_id,
-                    'gas': 800000,  # 增加gas限制
+                    'gas': 800000,
                     'gasPrice': w3_other.eth.gas_price,
                     'nonce': nonce
                 })
@@ -120,7 +120,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             try:
                 tx = other_contract.functions.withdraw(token, recipient, amount).build_transaction({
                     'chainId': w3_other.eth.chain_id,
-                    'gas': 800000,  # 增加gas限制
+                    'gas': 800000,
                     'gasPrice': w3_other.eth.gas_price,
                     'nonce': nonce
                 })
